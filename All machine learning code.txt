@@ -1,0 +1,262 @@
+import requests
+import pandas as pd
+from datetime import datetime
+import arrow
+import matplotlib.pyplot as plt
+import talib
+import seaborn as sns
+import statsmodels.api as sm
+import numpy as np
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import GradientBoostingRegressor
+
+Int = '1d'
+Rnge = '300d'
+Ticker = 'APT.AX'
+
+#This function retrives and stores stock data in data frame
+def GatherData(Symbol, Range, Interval):
+    Request = requests.get('https://query1.finance.yahoo.com/v8/finance/chart/{Symbol}?range={Range}&interval={Interval}'.format(**locals()))
+    data = Request.json()
+    body = data['chart']['result'][0]
+    Time = pd.Series(body['timestamp'])
+    #To convert to AEST 15 hours (54000 seconds) difference with EST
+    Constant = pd.Series([54000 for x in range(len(Time.index))])
+    Time = Time.add(Constant)
+    Date = pd.Series(map(lambda x: arrow.get(x).to('EST').datetime.replace(tzinfo=None), Time), name='Datetime(AEST)')
+    Frame = pd.DataFrame(body['indicators']['quote'][0], index=Date)
+
+    #Only retrieve these values of data
+    return Frame.loc[:, ('open', 'high', 'low', 'close', 'volume')]
+
+#This function produces a heatmap given a correlation dataframe
+def Heatmap(Corr):
+    sns.heatmap(Corr, annot = True, annot_kws = {"size" : 10})
+    #Plot heatmap
+    plt.yticks(rotation=0, size =14); plt.xticks(rotation=90, size = 14)
+    #fits heatmap tightly
+    plt.tight_layout()
+    plt.show()
+
+#This function fits a linear model to a training data set to make predictions
+#For a test data set
+def LinearModel(TrainTarg, TrainFeat, TestTarg, TestFeat):
+    model = sm.OLS(trainTargets, trainFeatures)
+
+    results = model.fit()
+    print('summary')
+    print(results.summary())
+
+    #pvalues are the percentage chance that the coefficient of the feature does not differ from 0
+    #Lower value such as less then 0.05 means a lot different from zero
+    print(results.pvalues)
+
+    trainPredictions = results.predict(trainFeatures)
+    testPredictions = results.predict(testFeatures)
+
+    plt.scatter(trainPredictions,trainTargets,alpha =0.2,color ='b',label ='train')
+    plt.scatter(testPredictions, testTargets,alpha=0.2, color = 'r', label='test')
+
+    xmin, xmax = plt.xlim()
+    plt.plot(np.arange(xmin,xmax,0.01), np.arange(xmin,xmax,0.01), c='k')
+
+    plt.xlabel('predictions')
+    plt.ylabel('actual')
+    plt.legend()
+    plt.show()
+
+#This function fits features into leaf nodes using the decision tree regressor module
+def DecisionTree(trainFeat, trainTarg, testFeat, testTarg):
+    
+    decisionTree = DecisionTreeRegressor(max_depth = 3)#max number of trees grouping features together
+    decisionTree.fit(trainFeatures, trainTargets)
+
+    trainPredict = decisionTree.predict(trainFeatures)
+    testPredict = decisionTree.predict(testFeatures)
+
+    #Ideal graph shows diagonal line from bottom left to top right
+    #Points are grouped due to leaf nodes
+    plt.scatter(trainPredict, trainTargets, label = 'trainSet')
+    plt.scatter(testPredict, testTargets, label = 'testSet')
+    plt.show()
+
+#This function creates a dictionary of hyperparameters for a RandomForestRegressor and finds
+#The best ones
+def FindBestGridRFR(trainFeat, trainTarg, testFeat, testTarg):
+    
+    from sklearn.model_selection import ParameterGrid
+    RFR = RandomForestRegressor()
+    #Creates dictionary for hyper parameters
+    #SET Possible parameters here to test
+    grid = {'n_estimators': [200], 'max_depth': [3], 'max_features': [4,6,8,10], 'random_state': [42]}
+    testScores = []
+
+    for g in ParameterGrid(grid):
+        RFR.set_params(**g) # ** is unpacking the grid
+
+        RFR.fit(trainFeatures, trainTargets)
+    
+        testScores.append(RFR.score(testFeatures, testTargets))
+
+    bestScore = np.argmax(testScores)
+    print(testScores[bestScore], ParameterGrid(grid)[bestScore])
+
+#This function creates a dictionary of hyperparameters for a GradientBoostingRegressor and finds
+#The best ones
+def FindBestGridGBR(trainFeat, trainTarg, testFeat, testTarg):
+    from sklearn.model_selection import ParameterGrid
+    GBR = GradientBoostingRegressor()
+    #Creates dictionary for hyper parameters
+    #SET Possible parameters here to test
+    grid = {'n_estimators': [200], 'max_depth': [3], 'random_state': [42], 'learning_rate':[0.01], 'subsample':[0.6]}
+    testScores = []
+
+    for g in ParameterGrid(grid):
+        GBR.set_params(**g) # ** is unpacking the grid
+
+        GBR.fit(trainFeatures, trainTargets)
+    
+        testScores.append(GBR.score(testFeatures, testTargets))
+
+    bestScore = np.argmax(testScores)
+    print(testScores[bestScore], ParameterGrid(grid)[bestScore])
+
+#Feature importance
+def VisualizeFeatureImportance(regressor, featureNames):
+    #Retrieves features importance from rfr model
+    importance = regressor.feature_importances_
+
+    #Get index of importances from big to small
+    Index = np.argsort(importance)[::-1]
+
+    x = range(len(importance))
+
+    labels = np.array(featureNames)[Index]
+
+    plt.bar(x, importance[Index], tick_label = labels)
+    plt.xticks(rotation=90)
+    plt.show()
+
+    return importance
+
+#####
+##############
+#####
+    
+Stock = GatherData(Ticker, Rnge, Int);
+
+print(Stock.head())
+
+#Create targets in this case a pct_change for 5 days in the future
+Stock['5dFut'] = Stock['close'].shift(-5)
+Stock['5dFutPct'] = Stock['5dFut'].pct_change(5)
+Stock['5dClosePct'] = Stock['close'].pct_change(5)
+
+featureNames = ['5dClosePct']
+
+#Create moving averages and RSI's with fiven ranges, this is to find something that reflects
+#a correlation with the target being the 5dFutPct
+for i in [14, 30, 50, 200]:
+    Stock['MovAv' + str(i)] = talib.SMA(Stock['close'].values,timeperiod = i) /Stock['close']
+    Stock['RSI' + str(i)] = talib.RSI(Stock['close'].values, timeperiod = i)
+
+    featureNames = featureNames + ['MovAv' + str(i), 'RSI' + str(i)]
+    
+
+#remove NaN values
+Stock = Stock.dropna()
+
+features = Stock[featureNames]
+
+targets = Stock['5dFutPct']
+
+FeatureTargetCols = ['5dFutPct'] + featureNames
+FeatureTargetDf = Stock[FeatureTargetCols]
+
+#Pearson correlation between variables(-1 negatively correlated, 1 positively correlated)
+correlation = FeatureTargetDf.corr()
+
+#Adds constant to data frame
+linearFeatures = sm.add_constant(features)
+
+
+#85 percent of data set use to train machine learning
+trainSize = int(0.85 * features.shape[0])
+
+trainFeatures = linearFeatures[:trainSize]
+trainTargets = targets[:trainSize]
+
+testFeatures = linearFeatures[trainSize:]
+testTargets = targets[trainSize:]
+
+print('step 1')
+
+#
+
+#Create new features for better correlation
+
+newFeatures = ['Volume1dChange', 'Volume1dChangeSMA']
+
+featureNames.extend(newFeatures)
+
+Stock['Volume1dChange'] = Stock['volume'].pct_change()
+Stock['Volume1dChangeSMA'] = talib.SMA(Stock['Volume1dChange'].values, timeperiod = 5)
+
+Days = pd.get_dummies(Stock.index.dayofweek, prefix = 'weekday', drop_first =True)
+
+Days.index = Stock.index
+Stock = pd.concat([Stock, Days], axis = 1)
+
+featureNames.extend(['weekday_' + str(i) for i in range (1,5)])
+Stock.dropna(inplace=True)
+
+newFeatures.extend(['weekday_' + str(i) for i in range(1, 5)])
+
+#Heatmap(Stock[newFeatures + ['5dFutPct']].corr())
+
+###
+RFR = RandomForestRegressor(n_estimators=200, max_depth=3, max_features=8, random_state=42)
+RFR.fit(trainFeatures, trainTargets)
+
+trainPredictions = RFR.predict(trainFeatures)
+testPredictions = RFR.predict(testFeatures)
+
+from sklearn.ensemble import GradientBoostingRegressor
+
+#Use FindBestGrid function to search for the best hyperparamters for regressor.fit()
+
+
+#print(GBR.score(trainFeatures, trainTargets))
+#print(GBR.score(testFeatures, testTargets))
+
+from sklearn.preprocessing import scale
+
+#Remove weekday values as they are useless
+trainFeatures = trainFeatures.iloc[:, :-4]
+testFeatures = testFeatures.iloc[:, :-4]
+
+#Standardize data so that mean is 0 and standard deviation is 1 for KNN
+scaledTrainFeatures = scale(trainFeatures)
+scaledTestFeatures = scale(testFeatures)
+
+#Plot standardized data against historical data in histogram charts
+#f, ax = plt.subplots(nrows = 2, ncols = 1)
+#trainFeatures.iloc[:,2].hist(ax=ax[0])
+#ax[1].hist(scaledTrainFeatures[:,2])
+#plt.show()
+
+from sklearn.neighbors import KNeighborsRegressor
+
+#Visually inspect command window to find which number of neighbors is the best
+#for i in range(2,13):
+   # KNN = KNeighborsRegressor(n_neighbors = i)
+
+   # KNN.fit(scaledTrainFeatures, trainTargets)
+
+    #print("number of neighbors = ", i)
+    #print('train, test scores')
+    #print(KNN.score(scaledTrainFeatures, trainTargets))
+    #print(KNN.score(scaledTestFeatures, testTargets))
+
+from keras.models im
