@@ -2,3 +2,12 @@ Open command Pallete (CTRL+Shift+P)
 start typing Python: Create Environment
 Choose 'Venv'
 Select Intepreter
+
+If error occurs with different python version to virtual environment:
+Type in Terminal 
+Set-ExecutionPolicy Unrestricted -Scope Process
+.venv\Scripts\Activate.ps1
+Set-ExecutionPolicy Default -Scope Process
+
+
+
